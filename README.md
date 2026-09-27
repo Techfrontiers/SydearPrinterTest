@@ -1,6 +1,8 @@
 # SYDEAR Printer Test
 
-Android test app for Bluetooth printing with the **EasyPrint ES-9910UB** (80mm thermal printer).
+Android test app for Bluetooth printing with the **EasyPrint ES-9910UB**
+(Bluetooth name `ES-9910UB`, MAC `66:32:8E:84:F6:84`, SPP UUID
+`00001101-0000-1000-8000-00805F9B34FB`)
 
 - Package: `com.sydear.printertest`
 - Transport: Bluetooth Classic RFCOMM/SPP UUID `00001101-0000-1000-8000-00805F9B34FB`
@@ -10,12 +12,50 @@ Android test app for Bluetooth printing with the **EasyPrint ES-9910UB** (80mm t
   downloads via DownloadManager and opens the system installer through a custom
   `ApkProvider` (no androidx dependency)
 
-## Findings (tested on real hardware)
+> ES-9910UB is a sticker/label printer — it speaks **TSPL**, not ESC/POS
+> (verified: ESC/POS commands are silently ignored)
 
-- Bluetooth RFCOMM/SPP **connects successfully**.
-- **ESC/POS is NOT the path forward** — the printer silently ignores ESC/POS commands.
-  (The ES-9910UB is a sticker/label printer, not an ESC/POS receipt printer.)
-- **TSPL works** — TSPL label commands print correctly on the device.
+## App menus
+
+| Menu | Contents |
+|------|----------|
+| 🖨️ พิมพ์ (Print) | Text box + formatting toolbar (bold / italic / underline / size S·M·L / align left·center·right) → print button |
+| 🔵 เครื่องพิมพ์ (Printer) | Device select / connect / profile / **Webhook** / app update |
+| 📋 Log | Full activity log + clear button |
+
+## Text printing
+
+Text is rendered with Android's text layout into a 1-bit bitmap
+(correct **Thai** shaping + bold/italic/underline/size/alignment),
+then sent as a TSPL `BITMAP` command:
+
+```
+BITMAP X,Y,width,height,mode,data…
+```
+- `width` in **bytes**, `height` in **dots** (per TSC TSPL2 manual);
+  binary data follows the comma immediately (no CRLF before it)
+- bit `1` = black dot, MSB first
+
+## Webhook — print over the network
+
+Enable from 🔵 เครื่องพิมพ์ → **เปิด Webhook**.
+The phone becomes an HTTP server on port `8080`:
+
+```
+GET  /status   → {ok, connected, printer, version}
+POST /print    → JSON body {text, bold, italic, underline, size, align}
+```
+
+Pass the key via `?key=` or the `X-Webhook-Key` header
+(the app shows the key and the phone's IPs — works over same-WiFi or Tailscale).
+
+Example:
+
+```bash
+curl -X POST "http://<phone>:8080/print?key=<key>" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"สวัสดี","bold":true,"size":"L","align":"center"}'
+```
 
 ## Printer Profile: 80mm Continuous Thermal
 
