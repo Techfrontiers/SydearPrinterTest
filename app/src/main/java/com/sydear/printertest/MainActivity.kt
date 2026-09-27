@@ -32,6 +32,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.*
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.OutputStream
 import java.util.UUID
@@ -190,6 +191,21 @@ class MainActivity : Activity() {
             setOnClickListener { printStyledText() }
         }
         s.addView(printButton, lp())
+        val invertCheck = CheckBox(this).apply {
+            text = "กลับสีบิตแมป (ถ้าพื้นพิมพ์ดำให้ลองติ๊ก/เอาติ๊กออก)"
+            isChecked = getSharedPreferences("sydear_printer", MODE_PRIVATE)
+                .getBoolean("invert_bitmap", false)
+            setOnCheckedChangeListener { _, v ->
+                getSharedPreferences("sydear_printer", MODE_PRIVATE)
+                    .edit().putBoolean("invert_bitmap", v).apply()
+                log("กลับสีบิตแมป: ${if (v) "เปิด" else "ปิด"}")
+            }
+        }
+        s.addView(invertCheck, lp())
+        s.addView(Button(this).apply {
+            text = "🔬 พิมพ์แพทเทิร์นทดสอบ"
+            setOnClickListener { printDiagnosticPattern() }
+        }, lp())
         quickTestButton = Button(this).apply {
             text = "ทดสอบด่วน (TSPL)"; setOnClickListener { sendTsplContinuousTest() }
         }
@@ -249,9 +265,11 @@ class MainActivity : Activity() {
     private fun printStyledText() {
         val spanned = printInput.text
         if (spanned.isNullOrBlank()) { log("พิมพ์ข้อความก่อน"); return }
+        val invert = getSharedPreferences("sydear_printer", MODE_PRIVATE)
+            .getBoolean("invert_bitmap", false)
         thread {
             try {
-                val job = PrintRenderer.render(profile80mmContinuous, spanned)
+                val job = PrintRenderer.render(profile80mmContinuous, spanned, invert)
                 if (job == null) { log("ไม่มีข้อความให้พิมพ์"); return@thread }
                 job.logLines.forEach { log(it) }
                 sendBytes(job.tspl, "BITMAP print")
@@ -261,11 +279,61 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * แพทเทิร์นวินิจฉัย: พิมพ์ป้าย TEXT (เส้นทางที่พิสูจน์แล้วว่าพิมพ์ได้)
+     * คู่กับโซน BITMAP ที่รู้ค่าไบต์แน่นอน (0x00 / 0xFF / 0xAA)
+     * ดูผลแล้วจะรู้ทันทีว่าเครื่องอ่าน bit 0/1 เป็นสีอะไร
+     */
+    private fun printDiagnosticPattern() {
+        thread {
+            try {
+                val p = profile80mmContinuous
+                val dpm = PrintRenderer.DOTS_PER_MM
+                val body = ByteArrayOutputStream()
+                fun b(s: String) = body.write(s.toByteArray(Charsets.US_ASCII))
+                val zoneW = 24; val zoneH = 48
+                var y = p.topMarginMm * dpm
+                fun zone(label: String, fill: Byte) {
+                    b("TEXT 40,$y,\"TSS24.BF2\",0,1,1,\"$label\"\r\n")
+                    y += 40
+                    b("BITMAP 40,$y,$zoneW,$zoneH,0,")
+                    body.write(ByteArray(zoneW * zoneH) { fill })
+                    b("\r\n")
+                    y += zoneH + 24
+                }
+                zone("A:00", 0x00)
+                zone("B:FF", 0xFF.toByte())
+                zone("C:AA", 0xAA.toByte())
+                val totalMm = ceil((y + p.bottomMarginMm * dpm).toDouble() / dpm).toInt()
+                val out = ByteArrayOutputStream()
+                fun a(s: String) = out.write(s.toByteArray(Charsets.US_ASCII))
+                a("SIZE ${p.widthMm} mm,$totalMm mm\r\n")
+                a("GAP ${p.gapMm},${p.gapOffset}\r\n")
+                a("SPEED ${p.speed}\r\n")
+                a("DENSITY ${p.density}\r\n")
+                a("DIRECTION ${p.direction}\r\n")
+                a("REFERENCE 0,0\r\n")
+                a("SET PEEL ${onOff(p.peel)}\r\n")
+                a("SET CUTTER ${onOff(p.cutter)}\r\n")
+                a("SET TEAR ${onOff(p.tear)}\r\n")
+                a("CLS\r\n")
+                out.write(body.toByteArray())
+                a("PRINT 1\r\n")
+                log("พิมพ์แพทเทิร์นวินิจฉัย: A=0x00 B=0xFF C=0xAA (สูง ${totalMm}mm)")
+                sendBytes(out.toByteArray(), "diagnostic pattern")
+            } catch (e: Exception) {
+                log("พิมพ์แพทเทิร์นล้มเหลว: ${e.message}")
+            }
+        }
+    }
+
     /** webhook สั่งพิมพ์: สร้าง span จาก style แล้วใช้ pipeline เดียวกัน */
     private fun webhookPrint(text: String, style: WebhookServer.PrintStyle): WebhookServer.PrintResult {
         if (output == null) return WebhookServer.PrintResult(false, "printer not connected")
+        val invert = getSharedPreferences("sydear_printer", MODE_PRIVATE)
+            .getBoolean("invert_bitmap", false)
         return try {
-            val job = PrintRenderer.render(profile80mmContinuous, buildSpanned(text, style))
+            val job = PrintRenderer.render(profile80mmContinuous, buildSpanned(text, style), invert)
                 ?: return WebhookServer.PrintResult(false, "render failed")
             job.logLines.forEach { log("[webhook] $it") }
             log("[webhook] สั่งพิมพ์: ${text.take(50)}")
