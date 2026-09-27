@@ -123,6 +123,9 @@ class WebhookServer(
         if (reqLine.size < 2) return null
         val method = reqLine[0].uppercase()
         val rawPath = reqLine[1]
+        // รองรับ absolute-form (เช่น GET http://host:port/path) ที่ proxy/tunnel ส่งมา:
+        // ตัด scheme://host ออกให้เหลือ origin-form ก่อนแยก path/query
+        val originPath = rawPath.replace(Regex("^https?://[^/]+"), "").ifEmpty { "/" }
         val headers = mutableMapOf<String, String>()
         for (i in 1 until lines.size) {
             val idx = lines[i].indexOf(":")
@@ -141,8 +144,8 @@ class WebhookServer(
             }
             if (read < contentLength) body = body.copyOf(read)
         }
-        val pathOnly = rawPath.substringBefore("?")
-        val queryKey = rawPath.substringAfter("?", "").split("&").mapNotNull {
+        val pathOnly = originPath.substringBefore("?")
+        val queryKey = originPath.substringAfter("?", "").split("&").mapNotNull {
             val kv = it.split("=", limit = 2)
             if (kv.size == 2 && kv[0] == "key") kv[1] else null
         }.firstOrNull()
