@@ -194,7 +194,7 @@ class MainActivity : Activity() {
         val invertCheck = CheckBox(this).apply {
             text = "กลับสีบิตแมป (ถ้าพื้นพิมพ์ดำให้ลองติ๊ก/เอาติ๊กออก)"
             isChecked = getSharedPreferences("sydear_printer", MODE_PRIVATE)
-                .getBoolean("invert_bitmap", false)
+                .getBoolean("invert_bitmap", true)
             setOnCheckedChangeListener { _, v ->
                 getSharedPreferences("sydear_printer", MODE_PRIVATE)
                     .edit().putBoolean("invert_bitmap", v).apply()
@@ -266,7 +266,7 @@ class MainActivity : Activity() {
         val spanned = printInput.text
         if (spanned.isNullOrBlank()) { log("พิมพ์ข้อความก่อน"); return }
         val invert = getSharedPreferences("sydear_printer", MODE_PRIVATE)
-            .getBoolean("invert_bitmap", false)
+            .getBoolean("invert_bitmap", true)
         thread {
             try {
                 val job = PrintRenderer.render(profile80mmContinuous, spanned, invert)
@@ -331,7 +331,7 @@ class MainActivity : Activity() {
     private fun webhookPrint(text: String, style: WebhookServer.PrintStyle): WebhookServer.PrintResult {
         if (output == null) return WebhookServer.PrintResult(false, "printer not connected")
         val invert = getSharedPreferences("sydear_printer", MODE_PRIVATE)
-            .getBoolean("invert_bitmap", false)
+            .getBoolean("invert_bitmap", true)
         return try {
             val job = PrintRenderer.render(profile80mmContinuous, buildSpanned(text, style), invert)
                 ?: return WebhookServer.PrintResult(false, "render failed")
