@@ -102,10 +102,28 @@ object PrintRenderer {
     /** ห่อบิตแมปเป็นงานพิมพ์ TSPL ทั้งชุด — คืน null ถ้าไม่มีข้อความให้พิมพ์ */
     fun render(profile: MainActivity.PrinterProfile, spanned: Spanned, invert: Boolean): RenderedJob? {
         val rb = renderBitmap(spanned, invert) ?: return null
+        return wrapBitmap(profile, rb, "ข้อความ")
+    }
+
+    /** พิมพ์รูปถ่าย: dithering เป็น 1-bit แล้วห่อ TSPL — คืน null ถ้ารูปใช้ไม่ได้ */
+    fun renderPhoto(profile: MainActivity.PrinterProfile, photo: Bitmap, invert: Boolean): RenderedJob? {
+        if (photo.width <= 0 || photo.height <= 0) return null
+        val targetW = CONTENT_WIDTH_DOTS
+        val targetH = ((photo.height.toFloat() / photo.width) * targetW).toInt()
+            .coerceIn(1, 150 * DOTS_PER_MM)   // สูงสุด 150mm กันกระดาษไหลไม่หยุด
+        val scaled = Bitmap.createScaledBitmap(photo, targetW, targetH, true)
+        val px = IntArray(targetW * targetH)
+        scaled.getPixels(px, 0, targetW, 0, 0, targetW, targetH)
+        scaled.recycle()
+        val d = Dither.floydSteinberg(px, targetW, targetH, invert)
+        return wrapBitmap(profile, RenderedBitmap(d.widthBytes, d.heightDots, d.data), "รูปภาพ")
+    }
+
+    private fun wrapBitmap(profile: MainActivity.PrinterProfile, rb: RenderedBitmap, kind: String): RenderedJob {
         val rowBytes = rb.widthBytes
         val h = rb.heightDots
         val mono = rb.data
-        val w = CONTENT_WIDTH_DOTS
+        val w = rowBytes * 8
 
         val dpm = DOTS_PER_MM
         val topDots = profile.topMarginMm * dpm
@@ -138,7 +156,7 @@ object PrintRenderer {
             "Total: $totalMm mm",
             "Speed: ${profile.speed}",
             "Density: ${profile.density}",
-            "Bitmap: ${w}x${h} dots"
+            "Bitmap: ${w}x${h} dots ($kind)"
         )
         return RenderedJob(out.toByteArray(), logs, contentMm, totalMm, w, h)
     }
