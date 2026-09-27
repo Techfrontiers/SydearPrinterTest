@@ -33,6 +33,9 @@ class MainActivity : Activity() {
     private lateinit var testButton: Button
     private lateinit var bitmapButton: Button
     private lateinit var feedButton: Button
+    private lateinit var tsplButton: Button
+    private lateinit var rawTextButton: Button
+    private lateinit var readBackButton: Button
     private lateinit var updateButton: Button
 
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
@@ -98,6 +101,18 @@ class MainActivity : Activity() {
             setOnClickListener { sendBytes(byteArrayOf(0x1B,0x64,0x03), "Feed") }
         }
         root.addView(feedButton, lp())
+        tsplButton = Button(this).apply {
+            text = "TEST: TSPL สติ๊กเกอร์"; isEnabled = false; setOnClickListener { sendTsplTest() }
+        }
+        root.addView(tsplButton, lp())
+        rawTextButton = Button(this).apply {
+            text = "TEST: RAW TEXT ล้วน"; isEnabled = false; setOnClickListener { sendRawTextTest() }
+        }
+        root.addView(rawTextButton, lp())
+        readBackButton = Button(this).apply {
+            text = "TEST: อ่านข้อมูลกลับ"; isEnabled = false; setOnClickListener { readBackTest() }
+        }
+        root.addView(readBackButton, lp())
         updateButton = Button(this).apply {
             text = "เช็คอัพเดท"; setOnClickListener { checkForUpdate(manual = true) }
         }
@@ -306,6 +321,7 @@ class MainActivity : Activity() {
                     socket = connected; output = connected!!.outputStream
                     status.text = "สถานะ: Connected ✅"; connectButton.text = "ตัดการเชื่อมต่อ"
                     testButton.isEnabled = true; bitmapButton.isEnabled = true; feedButton.isEnabled = true
+                    tsplButton.isEnabled = true; rawTextButton.isEnabled = true; readBackButton.isEnabled = true
                     log("CONNECTED via RFCOMM/SPP")
                 } else {
                     status.text = "สถานะ: Connect failed ❌"
@@ -321,6 +337,7 @@ class MainActivity : Activity() {
         output = null; socket = null
         status.text = "สถานะ: ยังไม่ได้เชื่อมต่อ"; connectButton.text = "เชื่อมต่อ"
         testButton.isEnabled = false; bitmapButton.isEnabled = false; feedButton.isEnabled = false
+        tsplButton.isEnabled = false; rawTextButton.isEnabled = false; readBackButton.isEnabled = false
         log("Disconnected")
     }
 
@@ -338,6 +355,59 @@ class MainActivity : Activity() {
     }
 
     private fun sendBitmapTest() { log("Bitmap test: รอผล Text test ก่อน เพื่อยืนยัน protocol") }
+
+    // ---------- TSPL (ภาษาเครื่องพิมพ์สติ๊กเกอร์) ----------
+    private fun sendTsplTest() {
+        val tspl = buildString {
+            append("SIZE 80 mm,40 mm\r\n")
+            append("GAP 3 mm,0 mm\r\n")
+            append("DIRECTION 1\r\n")
+            append("CLS\r\n")
+            append("TEXT 30,30,\"TSS24.BF2\",0,1,1,\"SYDEAR TSPL TEST\"\r\n")
+            append("TEXT 30,70,\"TSS24.BF2\",0,1,1,\"1234567890\"\r\n")
+            append("BARCODE 30,110,\"128\",60,1,0,2,2,\"TEST123\"\r\n")
+            append("PRINT 1\r\n")
+        }
+        sendBytes(tspl.toByteArray(Charsets.US_ASCII), "TSPL label")
+    }
+
+    private fun sendRawTextTest() {
+        val raw = "SYDEAR RAW TEST\n1234567890\n\n\n"
+        sendBytes(raw.toByteArray(Charsets.UTF_8), "RAW TEXT")
+    }
+
+    // อ่านข้อมูลที่เครื่องส่งกลับ (ถ้ามี) เพื่อดูว่าช่องสื่อสารสองทางหรือไม่
+    private fun readBackTest() {
+        val s = socket
+        if (s == null) { log("ยังไม่ได้เชื่อมต่อ"); return }
+        log("รอฟังข้อมูลจากเครื่อง 3 วินาที...")
+        thread {
+            try {
+                val inp = s.inputStream
+                val buf = ByteArray(256)
+                var total = 0
+                val deadline = System.currentTimeMillis() + 3000
+                while (System.currentTimeMillis() < deadline && total < buf.size) {
+                    val avail = inp.available()
+                    if (avail > 0) {
+                        val n = inp.read(buf, total, minOf(avail, buf.size - total))
+                        if (n <= 0) break
+                        total += n
+                    } else {
+                        Thread.sleep(100)
+                    }
+                }
+                if (total > 0) {
+                    val hex = buf.take(total).joinToString(" ") { "%02X".format(it) }
+                    log("เครื่องตอบกลับ $total bytes: $hex")
+                } else {
+                    log("เครื่องไม่ส่งข้อมูลกลับมาเลย")
+                }
+            } catch (e: Exception) {
+                log("อ่านข้อมูลล้มเหลว: ${e.message}")
+            }
+        }
+    }
 
     private fun sendBytes(bytes:ByteArray, label:String) {
         val out = output ?: run { log("ยังไม่ได้ connect"); return }
