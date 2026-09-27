@@ -34,6 +34,7 @@ class MainActivity : Activity() {
     private lateinit var bitmapButton: Button
     private lateinit var feedButton: Button
     private lateinit var tsplButton: Button
+    private lateinit var tsplContinuousButton: Button
     private lateinit var rawTextButton: Button
     private lateinit var readBackButton: Button
     private lateinit var updateButton: Button
@@ -106,6 +107,10 @@ class MainActivity : Activity() {
             text = "TEST: TSPL สติ๊กเกอร์"; isEnabled = false; setOnClickListener { sendTsplTest() }
         }
         root.addView(tsplButton, lp())
+        tsplContinuousButton = Button(this).apply {
+            text = "TEST: TSPL 80mm CONTINUOUS"; isEnabled = false; setOnClickListener { sendTsplContinuousTest() }
+        }
+        root.addView(tsplContinuousButton, lp())
         rawTextButton = Button(this).apply {
             text = "TEST: RAW TEXT ล้วน"; isEnabled = false; setOnClickListener { sendRawTextTest() }
         }
@@ -338,6 +343,7 @@ class MainActivity : Activity() {
                     status.text = "สถานะ: Connected ✅"; connectButton.text = "ตัดการเชื่อมต่อ"
                     testButton.isEnabled = true; bitmapButton.isEnabled = true; feedButton.isEnabled = true
                     tsplButton.isEnabled = true; rawTextButton.isEnabled = true; readBackButton.isEnabled = true
+                    tsplContinuousButton.isEnabled = true
                     log("CONNECTED via RFCOMM/SPP")
                 } else {
                     status.text = "สถานะ: Connect failed ❌"
@@ -354,6 +360,7 @@ class MainActivity : Activity() {
         status.text = "สถานะ: ยังไม่ได้เชื่อมต่อ"; connectButton.text = "เชื่อมต่อ"
         testButton.isEnabled = false; bitmapButton.isEnabled = false; feedButton.isEnabled = false
         tsplButton.isEnabled = false; rawTextButton.isEnabled = false; readBackButton.isEnabled = false
+        tsplContinuousButton.isEnabled = false
         log("Disconnected")
     }
 
@@ -373,6 +380,70 @@ class MainActivity : Activity() {
     private fun sendBitmapTest() { log("Bitmap test: รอผล Text test ก่อน เพื่อยืนยัน protocol") }
 
     // ---------- TSPL (ภาษาเครื่องพิมพ์สติ๊กเกอร์) ----------
+    // ---------- Printer Profile: 80mm Continuous Thermal ----------
+    // โปรไฟล์เครื่องพิมพ์กระดาษต่อเนื่อง 80mm (แบบเดียวกับที่ตั้งใน Windows driver)
+    data class PrinterProfile(
+        val name: String,
+        val widthMm: Int,
+        val defaultHeightMm: Int,
+        val media: String,      // Continuous
+        val gapMm: Int,         // 0 = กระดาษต่อเนื่อง ไม่มีช่องว่าง
+        val gapOffset: Int,
+        val speed: Int,         // 8
+        val density: Int,       // 8
+        val direction: Int,     // 0
+        val peel: Boolean,      // false = OFF
+        val cutter: Boolean,    // false = OFF
+        val tear: Boolean       // false = OFF
+    )
+
+    private val profile80mmContinuous = PrinterProfile(
+        name = "80mm Continuous Thermal",
+        widthMm = 80,
+        defaultHeightMm = 100,
+        media = "Continuous",
+        gapMm = 0,
+        gapOffset = 0,
+        speed = 8,
+        density = 8,
+        direction = 0,
+        peel = false,
+        cutter = false,
+        tear = false
+    )
+
+    private fun onOff(b: Boolean) = if (b) "ON" else "OFF"
+
+    // บล็อกตั้งค่า TSPL ที่ต้องส่งก่อนเนื้อหาทุกครั้ง
+    private fun tsplConfigBlock(p: PrinterProfile): String = buildString {
+        append("SIZE ${p.widthMm} mm,${p.defaultHeightMm} mm\r\n")
+        append("GAP ${p.gapMm},${p.gapOffset}\r\n")
+        append("SPEED ${p.speed}\r\n")
+        append("DENSITY ${p.density}\r\n")
+        append("DIRECTION ${p.direction}\r\n")
+        append("REFERENCE 0,0\r\n")
+        append("SET PEEL ${onOff(p.peel)}\r\n")
+        append("SET CUTTER ${onOff(p.cutter)}\r\n")
+        append("SET TEAR ${onOff(p.tear)}\r\n")
+        append("CLS\r\n")
+    }
+
+    private fun sendTsplContinuousTest() {
+        val p = profile80mmContinuous
+        val tspl = buildString {
+            append(tsplConfigBlock(p))
+            append("TEXT 30,30,\"TSS24.BF2\",0,1,1,\"SYDEAR TSPL TEST\"\r\n")
+            append("TEXT 30,70,\"TSS24.BF2\",0,1,1,\"ES-9910UB\"\r\n")
+            append("TEXT 30,110,\"TSS24.BF2\",0,1,1,\"80mm CONTINUOUS\"\r\n")
+            append("TEXT 30,150,\"TSS24.BF2\",0,1,1,\"SPEED 8\"\r\n")
+            append("TEXT 30,190,\"TSS24.BF2\",0,1,1,\"DENSITY 8\"\r\n")
+            append("TEXT 30,230,\"TSS24.BF2\",0,1,1,\"GAP 0\"\r\n")
+            append("PRINT 1\r\n")
+        }
+        log("ใช้โปรไฟล์: ${p.name}")
+        sendBytes(tspl.toByteArray(Charsets.US_ASCII), "TSPL 80mm CONTINUOUS")
+    }
+
     private fun sendTsplTest() {
         val tspl = buildString {
             append("SIZE 80 mm,40 mm\r\n")
