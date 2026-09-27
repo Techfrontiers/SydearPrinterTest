@@ -3,9 +3,11 @@ package com.sydear.printertest
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.database.Cursor
+import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Environment
 import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
 import java.io.File
 import java.io.FileNotFoundException
 
@@ -20,7 +22,19 @@ class ApkProvider : ContentProvider() {
     override fun query(
         uri: Uri, projection: Array<String>?, selection: String?,
         selectionArgs: Array<String>?, sortOrder: String?
-    ): Cursor? = null
+    ): Cursor? {
+        // ตัวติดตั้งของระบบจะถามชื่อไฟล์และขนาดก่อนเปิดไฟล์ — ตอบให้เหมือน FileProvider
+        return try {
+            val name = uri.lastPathSegment ?: return null
+            require("/" !in name && ".." !in name && name.endsWith(".apk")) { "bad file name" }
+            val dir = context!!.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: return null
+            val f = File(dir, name)
+            if (!f.isFile) return null
+            MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), 1).apply {
+                addRow(arrayOf<Any>(f.name, f.length()))
+            }
+        } catch (_: Exception) { null }
+    }
 
     override fun getType(uri: Uri): String = "application/vnd.android.package-archive"
 
