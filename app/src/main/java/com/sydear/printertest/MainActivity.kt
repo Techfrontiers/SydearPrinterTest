@@ -13,12 +13,17 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.MediaStore
 import android.provider.Settings
 import android.text.InputType
 import android.text.Layout
@@ -84,7 +89,17 @@ class MainActivity : Activity() {
     private val updateFileName = "sydear-printer-test-update.apk"
     private var downloadId: Long = -1
 
-    companion object { private const val REQUEST_BT = 9001 }
+    // ---------- พิมพ์รูปภาพ ----------
+    private var pendingPhotoName: String? = null
+    private var pendingPhoto: Bitmap? = null
+    private lateinit var photoPreview: ImageView
+    private lateinit var printPhotoButton: Button
+
+    companion object {
+        private const val REQUEST_BT = 9001
+        private const val REQ_CAPTURE = 101
+        private const val REQ_PICK = 102
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -206,6 +221,40 @@ class MainActivity : Activity() {
             text = "🔬 พิมพ์แพทเทิร์นทดสอบ"
             setOnClickListener { printDiagnosticPattern() }
         }, lp())
+        // ---------- พิมพ์รูปภาพ ----------
+        s.addView(TextView(this).apply {
+            text = "🖼️ พิมพ์รูปภาพ"
+            textSize = 16f
+            setPadding(0, 16, 0, 4)
+        }, lp())
+        val photoRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val halfLp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        photoRow.addView(Button(this).apply {
+            text = "📷 ถ่ายรูป"
+            setOnClickListener { capturePhoto() }
+        }, halfLp)
+        photoRow.addView(Button(this).apply {
+            text = "🖼️ เลือกรูป"
+            setOnClickListener { pickPhoto() }
+        }, halfLp)
+        s.addView(photoRow, lp())
+        photoPreview = ImageView(this).apply {
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            visibility = View.GONE
+        }
+        val pvLp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        s.addView(photoPreview, pvLp)
+        printPhotoButton = Button(this).apply {
+            text = "🖨️ พิมพ์รูปนี้"
+            textSize = 18f
+            visibility = View.GONE
+            setOnClickListener { printPhoto() }
+        }
+        s.addView(printPhotoButton, lp())
         quickTestButton = Button(this).apply {
             text = "ทดสอบด่วน (TSPL)"; setOnClickListener { sendTsplContinuousTest() }
         }
@@ -284,6 +333,122 @@ class MainActivity : Activity() {
      * คู่กับโซน BITMAP ที่รู้ค่าไบต์แน่นอน (0x00 / 0xFF / 0xAA)
      * ดูผลแล้วจะรู้ทันทีว่าเครื่องอ่าน bit 0/1 เป็นสีอะไร
      */
+    // ================= พิมพ์รูปภาพ =================
+
+    /** เปิดแอปกล้องของระบบถ่ายรูป — ไม่ต้องขอ permission กล้อง เพราะแอปกล้องถ่ายให้ */
+    private fun capturePhoto() {
+        try {
+            val name = "cap_${System.currentTimeMillis()}.jpg"
+            val uri = Uri.parse("content://com.sydear.printertest.photoprovider/$name")
+            pendingPhotoName = name
+            val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                putExtra(MediaStore.EXTRA_OUTPUT, uri)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val cams = packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            if (cams.isEmpty()) { log("ไม่เจอแอปกล้องในเครื่อง"); return }
+            for (ri in cams) {
+                grantUriPermission(
+                    ri.activityInfo.packageName, uri,
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            startActivityForResult(intent, REQ_CAPTURE)
+        } catch (e: Exception) { log("เปิดกล้องไม่ได้: ${e.message}") }
+    }
+
+    /** เลือกรูปจากแกลเลอรี — ไม่ต้องขอ permission สตอเรจ */
+    private fun pickPhoto() {
+        try {
+            val intent = Intent(Intent.ACTION_GET_CONTENT).apply { type = "image/*" }
+            startActivityForResult(Intent.createChooser(intent, "เลือกรูป"), REQ_PICK)
+        } catch (e: Exception) { log("เปิดแกลเลอรีไม่ได้: ${e.message}") }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != Activity.RESULT_OK) { log("ยกเลิกการเลือกรูป"); return }
+        try {
+            val bmp: Bitmap? = when (requestCode) {
+                REQ_CAPTURE -> {
+                    val name = pendingPhotoName
+                    val f = if (name != null)
+                        File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), name) else null
+                    if (f == null || !f.isFile) { log("ไม่เจอไฟล์รูปที่ถ่าย"); return }
+                    decodeSampled(f.absolutePath, null)
+                        ?.let { applyExifRotation(it, f.absolutePath, null) }
+                }
+                REQ_PICK -> {
+                    val uri = data?.data
+                    if (uri == null) { log("ไม่ได้เลือกรูป"); return }
+                    decodeSampled(null, uri)?.let { applyExifRotation(it, null, uri) }
+                }
+                else -> return
+            }
+            if (bmp == null) { log("อ่านรูปไม่ได้"); return }
+            pendingPhoto?.recycle()
+            pendingPhoto = bmp
+            photoPreview.setImageBitmap(bmp)
+            photoPreview.visibility = View.VISIBLE
+            printPhotoButton.visibility = View.VISIBLE
+            log("โหลดรูปแล้ว ${bmp.width}x${bmp.height} — กด \"🖨️ พิมพ์รูปนี้\" ได้เลย")
+        } catch (e: Exception) { log("โหลดรูปล้มเหลว: ${e.message}") }
+    }
+
+    /**
+     * ถอดรหัสบิตแมปแบบประหยัดแรม: อ่านขนาดก่อน แล้ว decode ที่ ~1216px
+     * (2 เท่าของ 608 dots — เผื่อคุณภาพตอน dithering)
+     */
+    private fun decodeSampled(path: String?, uri: Uri?): Bitmap? {
+        fun openStream() = if (path != null) java.io.FileInputStream(path)
+        else contentResolver.openInputStream(uri!!)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        try { openStream()?.use { BitmapFactory.decodeStream(it, null, bounds) } } catch (_: Exception) {}
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+        while (maxDim / (sample * 2) >= 1216) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        return try { openStream()?.use { BitmapFactory.decodeStream(it, null, opts) } } catch (_: Exception) { null }
+    }
+
+    /** หมุนรูปตาม EXIF (รูปจากกล้องบางทีตะแคง) */
+    private fun applyExifRotation(bmp: Bitmap, path: String?, uri: Uri?): Bitmap {
+        val orient = try {
+            val exif = if (path != null) ExifInterface(path)
+            else contentResolver.openInputStream(uri!!)?.use { ExifInterface(it) }
+            exif?.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+                ?: ExifInterface.ORIENTATION_NORMAL
+        } catch (_: Exception) { ExifInterface.ORIENTATION_NORMAL }
+        val deg = when (orient) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+        if (deg == 0f) return bmp
+        val m = Matrix().apply { postRotate(deg) }
+        val out = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+        bmp.recycle()
+        return out
+    }
+
+    /** พิมพ์รูปที่เลือกไว้ ผ่าน dithering → TSPL BITMAP */
+    private fun printPhoto() {
+        val bmp = pendingPhoto
+        if (bmp == null) { log("เลือกรูปก่อนจ้า"); return }
+        thread {
+            try {
+                val invert = getSharedPreferences("sydear_printer", MODE_PRIVATE)
+                    .getBoolean("invert_bitmap", true)
+                val job = PrintRenderer.renderPhoto(profile80mmContinuous, bmp, invert)
+                if (job == null) { log("แปลงรูปไม่สำเร็จ"); return@thread }
+                job.logLines.forEach { log(it) }
+                sendBytes(job.tspl, "photo print")
+            } catch (e: Exception) { log("พิมพ์รูปล้มเหลว: ${e.message}") }
+        }
+    }
+
     private fun printDiagnosticPattern() {
         thread {
             try {
