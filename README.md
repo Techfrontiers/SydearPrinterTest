@@ -25,16 +25,43 @@ Matches the Windows driver stock settings:
 |------------|-----------------------|
 | Name       | 80mm Continuous Thermal |
 | Width      | 80 mm                 |
-| Height     | 100 mm (default)      |
+| Height     | **auto** — calculated from content (no fixed height) |
 | Media      | Continuous            |
 | GAP        | 0 mm                  |
 | GAP Offset | 0                     |
 | Speed      | 8                     |
-| Density    | 8                     |
+| Density    | 15                    |
 | Direction  | 0                     |
+| Top margin | 10 mm                 |
+| Bottom margin | 10 mm              |
 | Peel       | OFF                   |
 | Cutter     | OFF                   |
 | Tear       | OFF                   |
+
+### Auto paper height
+
+The renderer (`TsplLabel`) places each element and records its **real bounding
+box** (top/bottom edges in dots). Content height = the box covering all
+elements — never guessed from line count. No trailing padding is added after
+the last element.
+
+```
+TOTAL_HEIGHT = 10 mm (top) + CONTENT_HEIGHT + 10 mm (bottom)
+```
+
+Examples: content 42 mm → `SIZE 80 mm,62 mm`; content 137 mm → `SIZE 80 mm,157 mm`.
+If the total isn't a whole mm it rounds **up** (never clips content).
+The app logs the calculation before sending:
+
+```
+TSPL AUTO HEIGHT
+Content: 42 mm
+Top: 10 mm
+Bottom: 10 mm
+Total: 62 mm
+Speed: 8
+Density: 15
+```
 
 > Do NOT use Label/GAP 3 mm settings — this printer runs 80mm **continuous**
 > thermal paper, like the Windows driver stock `80mm Thermal`
