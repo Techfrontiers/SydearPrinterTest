@@ -134,7 +134,8 @@ class MainActivity : Activity() {
     private fun checkForUpdate(manual: Boolean) {
         thread {
             try {
-                val conn = java.net.URL(updateApiUrl).openConnection() as java.net.HttpURLConnection
+                // เติม ?t= กัน cache เก่าของ CDN
+                val conn = java.net.URL(updateApiUrl + "?t=" + System.currentTimeMillis()).openConnection() as java.net.HttpURLConnection
                 conn.setRequestProperty("Accept", "application/vnd.github+json")
                 conn.setRequestProperty("User-Agent", "sydear-printer-test")
                 conn.connectTimeout = 10000
