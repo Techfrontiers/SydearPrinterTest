@@ -91,6 +91,10 @@ object PrintRenderer {
                 }
             }
         }
+        // กลับขั้ว: ทดสอบบน ES-9910UB จริงพบว่าเครื่องอ่าน bit กลับด้าน
+        // (0=พิมพ์ดำ, 1=ไม่พิมพ์) ไม่ตรงคู่มือ — XOR ทั้งบัฟเฟอร์ให้พื้นขาวไม่พิมพ์
+        // (bit padding ขอบขวากลายเป็น 1 = ไม่พิมพ์ ถูกต้องแล้ว)
+        for (i in mono.indices) mono[i] = (mono[i].toInt() xor 0xFF).toByte()
 
         val dpm = DOTS_PER_MM
         val topDots = profile.topMarginMm * dpm
