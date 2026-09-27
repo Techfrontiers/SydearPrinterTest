@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.sydear.printertest">
     <!-- Android 12+ permissions for communicating with already-paired Bluetooth devices. -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
@@ -7,6 +8,11 @@
     <!-- Legacy permissions for Android 11 and below. -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
+    <!-- Internet สำหรับเช็คอัพเดทจาก GitHub Releases -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- สำหรับติดตั้ง APK อัพเดท -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
 
@@ -23,5 +29,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- เสิร์ฟไฟล์ APK ให้ตัวติดตั้งของระบบตอนอัพเดท -->
+        <provider
+            android:name=".ApkProvider"
+            android:authorities="com.sydear.printertest.apkprovider"
+            android:exported="true"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
