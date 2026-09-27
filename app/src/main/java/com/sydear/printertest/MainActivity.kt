@@ -2,15 +2,25 @@ package com.sydear.printertest
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.app.DownloadManager
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.widget.*
+import java.io.File
 import java.io.OutputStream
 import java.util.UUID
 import kotlin.concurrent.thread
@@ -23,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var testButton: Button
     private lateinit var bitmapButton: Button
     private lateinit var feedButton: Button
+    private lateinit var updateButton: Button
 
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -33,12 +44,18 @@ class MainActivity : Activity() {
     private val targetMac = "66:32:8E:84:F6:84"
     private val sppUuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
+    // Self-update: เช็คไฟล์ latest.json บน GitHub (อัพโหลดพร้อม APK ทุกครั้งที่ออกเวอร์ชันใหม่)
+    private val updateApiUrl = "https://raw.githubusercontent.com/Techfrontiers/SydearPrinterTest/main/updates/latest.json"
+    private val updateFileName = "sydear-printer-test-update.apk"
+    private var downloadId: Long = -1
+
     companion object { private const val REQUEST_BT = 9001 }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
         ensureBluetoothPermissions()
+        checkForUpdate(manual = false) // เช็คอัพเดทเงียบๆ ตอนเปิดแอป
     }
 
     private fun buildUi() {
@@ -81,6 +98,10 @@ class MainActivity : Activity() {
             setOnClickListener { sendBytes(byteArrayOf(0x1B,0x64,0x03), "Feed") }
         }
         root.addView(feedButton, lp())
+        updateButton = Button(this).apply {
+            text = "เช็คอัพเดท"; setOnClickListener { checkForUpdate(manual = true) }
+        }
+        root.addView(updateButton, lp())
         root.addView(TextView(this).apply {
             text = "Log"; textSize = 18f; typeface = Typeface.DEFAULT_BOLD; setPadding(0,18,0,6)
         }, lp())
@@ -92,6 +113,127 @@ class MainActivity : Activity() {
     }
 
     private fun lp() = LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT)
+
+    // ---------- Self-update ----------
+
+    private fun checkForUpdate(manual: Boolean) {
+        thread {
+            try {
+                val conn = java.net.URL(updateApiUrl).openConnection() as java.net.HttpURLConnection
+                conn.setRequestProperty("Accept", "application/vnd.github+json")
+                conn.setRequestProperty("User-Agent", "sydear-printer-test")
+                conn.connectTimeout = 10000
+                conn.readTimeout = 10000
+                if (conn.responseCode != 200) {
+                    if (manual) log("เช็คอัพเดท: server ตอบ ${conn.responseCode}")
+                    conn.disconnect()
+                    return@thread
+                }
+                val json = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val tag = Regex("\"version\"\\s*:\\s*\"v?([^\"]+)\"").find(json)?.groupValues?.get(1)
+                val apkUrl = Regex("\"url\"\\s*:\\s*\"([^\"]+)\"").find(json)?.groupValues?.get(1)
+                if (tag == null || apkUrl == null) {
+                    if (manual) log("เช็คอัพเดท: อ่านข้อมูล release ไม่ได้")
+                    return@thread
+                }
+                val installed = try {
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "0.0.0"
+                } catch (_: Exception) { "0.0.0" }
+                if (isNewerVersion(tag, installed)) {
+                    log("พบเวอร์ชันใหม่: $tag (ติดตั้งอยู่ $installed)")
+                    runOnUiThread { askToUpdate(tag, apkUrl) }
+                } else if (manual) {
+                    log("เป็นเวอร์ชันล่าสุดแล้ว ($installed)")
+                }
+            } catch (e: Exception) {
+                if (manual) log("เช็คอัพเดทล้มเหลว: ${e.message}")
+            }
+        }
+    }
+
+    private fun isNewerVersion(remote: String, local: String): Boolean {
+        fun parts(v: String) = v.split(".", "-").map { it.filter { c -> c.isDigit() }.toIntOrNull() ?: 0 }
+        val r = parts(remote); val l = parts(local)
+        for (i in 0 until maxOf(r.size, l.size)) {
+            val a = r.getOrElse(i) { 0 }; val b = l.getOrElse(i) { 0 }
+            if (a != b) return a > b
+        }
+        return false
+    }
+
+    private fun askToUpdate(tag: String, apkUrl: String) {
+        AlertDialog.Builder(this)
+            .setTitle("มีเวอร์ชันใหม่")
+            .setMessage("พบเวอร์ชัน $tag\nต้องการดาวน์โหลดและติดตั้งเลยไหม?")
+            .setPositiveButton("อัพเดทเลย") { _, _ -> downloadUpdate(tag, apkUrl) }
+            .setNegativeButton("ไว้ก่อน", null)
+            .show()
+    }
+
+    private fun downloadUpdate(tag: String, apkUrl: String) {
+        try {
+            // Android 8+ ต้องอนุญาต "ติดตั้งแอปที่ไม่รู้จัก" ให้แอปนี้ก่อน (ทำครั้งเดียว)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                log("กรุณาเปิด 'อนุญาตติดตั้งแอปที่ไม่รู้จัก' ให้แอปนี้ แล้วกดเช็คอัพเดทอีกครั้ง")
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                return
+            }
+            val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+            File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), updateFileName).delete()
+            val req = DownloadManager.Request(Uri.parse(apkUrl))
+                .setTitle("SYDEAR Printer Test $tag")
+                .setDescription("กำลังดาวน์โหลดอัพเดท...")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, updateFileName)
+            downloadId = dm.enqueue(req)
+            log("กำลังดาวน์โหลดอัพเดท $tag ...")
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(ctx: Context, intent: Intent) {
+                    if (intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) != downloadId) return
+                    try { unregisterReceiver(this) } catch (_: Exception) {}
+                    dm.query(DownloadManager.Query().setFilterById(downloadId)).use { c ->
+                        if (c.moveToFirst()) {
+                            val status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                            if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                                log("ดาวน์โหลดเสร็จ กำลังเปิดตัวติดตั้ง...")
+                                installApk()
+                            } else {
+                                val reason = try {
+                                    c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                                } catch (_: Exception) { -1 }
+                                log("ดาวน์โหลดล้มเหลว (reason=$reason)")
+                            }
+                        } else log("ไม่พบข้อมูลดาวน์โหลด")
+                    }
+                }
+            }
+            val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                registerReceiver(receiver, filter)
+            }
+        } catch (e: Exception) {
+            log("เริ่มดาวน์โหลดไม่ได้: ${e.message}")
+        }
+    }
+
+    private fun installApk() {
+        try {
+            val uri = Uri.parse("content://$packageName.apkprovider/$updateFileName")
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            log("เปิดตัวติดตั้งไม่ได้: ${e.message}")
+        }
+    }
+
+    // ---------- Bluetooth (เดิม) ----------
 
     private fun ensureBluetoothPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
