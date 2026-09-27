@@ -20,6 +20,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.widget.*
+import kotlin.math.ceil
 import java.io.File
 import java.io.OutputStream
 import java.util.UUID
@@ -381,17 +382,20 @@ class MainActivity : Activity() {
 
     // ---------- TSPL (ภาษาเครื่องพิมพ์สติ๊กเกอร์) ----------
     // ---------- Printer Profile: 80mm Continuous Thermal ----------
-    // โปรไฟล์เครื่องพิมพ์กระดาษต่อเนื่อง 80mm (แบบเดียวกับที่ตั้งใน Windows driver)
+    // โปรไฟล์กระดาษต่อเนื่อง 80mm — ความสูงกระดาษ "ไม่ตายตัว"
+    // ระบบจะคำนวณจาก bounding box จริงของเนื้อหา:
+    //   TOTAL = top margin (10mm) + CONTENT_HEIGHT + bottom margin (10mm)
     data class PrinterProfile(
         val name: String,
         val widthMm: Int,
-        val defaultHeightMm: Int,
         val media: String,      // Continuous
         val gapMm: Int,         // 0 = กระดาษต่อเนื่อง ไม่มีช่องว่าง
         val gapOffset: Int,
         val speed: Int,         // 8
-        val density: Int,       // 8
+        val density: Int,       // 15
         val direction: Int,     // 0
+        val topMarginMm: Int,    // 10
+        val bottomMarginMm: Int, // 10
         val peel: Boolean,      // false = OFF
         val cutter: Boolean,    // false = OFF
         val tear: Boolean       // false = OFF
@@ -400,13 +404,14 @@ class MainActivity : Activity() {
     private val profile80mmContinuous = PrinterProfile(
         name = "80mm Continuous Thermal",
         widthMm = 80,
-        defaultHeightMm = 100,
         media = "Continuous",
         gapMm = 0,
         gapOffset = 0,
         speed = 8,
-        density = 8,
+        density = 15,
         direction = 0,
+        topMarginMm = 10,
+        bottomMarginMm = 10,
         peel = false,
         cutter = false,
         tear = false
@@ -414,34 +419,58 @@ class MainActivity : Activity() {
 
     private fun onOff(b: Boolean) = if (b) "ON" else "OFF"
 
-    // บล็อกตั้งค่า TSPL ที่ต้องส่งก่อนเนื้อหาทุกครั้ง
-    private fun tsplConfigBlock(p: PrinterProfile): String = buildString {
-        append("SIZE ${p.widthMm} mm,${p.defaultHeightMm} mm\r\n")
-        append("GAP ${p.gapMm},${p.gapOffset}\r\n")
-        append("SPEED ${p.speed}\r\n")
-        append("DENSITY ${p.density}\r\n")
-        append("DIRECTION ${p.direction}\r\n")
-        append("REFERENCE 0,0\r\n")
-        append("SET PEEL ${onOff(p.peel)}\r\n")
-        append("SET CUTTER ${onOff(p.cutter)}\r\n")
-        append("SET TEAR ${onOff(p.tear)}\r\n")
-        append("CLS\r\n")
+    /**
+     * สร้างคำสั่ง TSPL ทั้งงานพิมพ์: คำนวณความสูงอัตโนมัติจากเนื้อหา
+     * @param buildContent lambda ที่ใช้ TsplLabel วางเนื้อหา (renderer)
+     */
+    private fun buildAutoHeightTspl(p: PrinterProfile, buildContent: TsplLabel.() -> Unit): String {
+        val dpm = TsplLabel.DOTS_PER_MM
+        val label = TsplLabel()
+        label.start(p.topMarginMm * dpm)
+        label.buildContent()
+
+        val contentDots = label.contentHeightDots()
+        val totalDots = p.topMarginMm * dpm + contentDots + p.bottomMarginMm * dpm
+        // ปัดขึ้นเป็น mm เต็มเสมอ (กันเนื้อหาโดนตัดที่ขอบ) — ไม่เติม padding อื่นเพิ่ม
+        val totalMm = ceil(totalDots.toDouble() / dpm).toInt()
+        val contentMm = label.contentHeightMm()
+
+        log("TSPL AUTO HEIGHT")
+        log("Content: ${"%.1f".format(contentMm)} mm")
+        log("Top: ${p.topMarginMm} mm")
+        log("Bottom: ${p.bottomMarginMm} mm")
+        log("Total: $totalMm mm")
+        log("Speed: ${p.speed}")
+        log("Density: ${p.density}")
+
+        return buildString {
+            append("SIZE ${p.widthMm} mm,$totalMm mm\r\n")
+            append("GAP ${p.gapMm},${p.gapOffset}\r\n")
+            append("SPEED ${p.speed}\r\n")
+            append("DENSITY ${p.density}\r\n")
+            append("DIRECTION ${p.direction}\r\n")
+            append("REFERENCE 0,0\r\n")
+            append("SET PEEL ${onOff(p.peel)}\r\n")
+            append("SET CUTTER ${onOff(p.cutter)}\r\n")
+            append("SET TEAR ${onOff(p.tear)}\r\n")
+            append("CLS\r\n")
+            append(label.contentTspl())
+            append("PRINT 1\r\n")
+        }
     }
 
     private fun sendTsplContinuousTest() {
         val p = profile80mmContinuous
-        val tspl = buildString {
-            append(tsplConfigBlock(p))
-            append("TEXT 30,30,\"TSS24.BF2\",0,1,1,\"SYDEAR TSPL TEST\"\r\n")
-            append("TEXT 30,70,\"TSS24.BF2\",0,1,1,\"ES-9910UB\"\r\n")
-            append("TEXT 30,110,\"TSS24.BF2\",0,1,1,\"80mm CONTINUOUS\"\r\n")
-            append("TEXT 30,150,\"TSS24.BF2\",0,1,1,\"SPEED 8\"\r\n")
-            append("TEXT 30,190,\"TSS24.BF2\",0,1,1,\"DENSITY 8\"\r\n")
-            append("TEXT 30,230,\"TSS24.BF2\",0,1,1,\"GAP 0\"\r\n")
-            append("PRINT 1\r\n")
-        }
         log("ใช้โปรไฟล์: ${p.name}")
-        sendBytes(tspl.toByteArray(Charsets.US_ASCII), "TSPL 80mm CONTINUOUS")
+        val tspl = buildAutoHeightTspl(p) {
+            addTextLine("SYDEAR TSPL TEST")
+            addTextLine("ES-9910UB")
+            addTextLine("80mm CONTINUOUS")
+            addTextLine("SPEED 8")
+            addTextLine("DENSITY 15")
+            addTextLine("GAP 0")
+        }
+        sendBytes(tspl.toByteArray(Charsets.US_ASCII), "TSPL 80mm CONTINUOUS AUTO")
     }
 
     private fun sendTsplTest() {
