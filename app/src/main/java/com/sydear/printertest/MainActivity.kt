@@ -13,34 +13,57 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.text.InputType
+import android.text.Layout
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.AlignmentSpan
+import android.text.style.RelativeSizeSpan
+import android.text.style.StyleSpan
+import android.text.style.UnderlineSpan
+import android.view.Gravity
+import android.view.View
 import android.widget.*
-import kotlin.math.ceil
+import org.json.JSONObject
 import java.io.File
 import java.io.OutputStream
 import java.util.UUID
 import kotlin.concurrent.thread
+import kotlin.math.ceil
 
 class MainActivity : Activity() {
+    // ---------- UI: tabs ----------
+    private lateinit var tabPrint: Button
+    private lateinit var tabPrinter: Button
+    private lateinit var tabLog: Button
+    private lateinit var printScreen: LinearLayout
+    private lateinit var printerScroll: ScrollView
+    private lateinit var logScreen: LinearLayout
     private lateinit var status: TextView
     private lateinit var logView: TextView
+
+    // ---------- UI: print tab ----------
+    private lateinit var printInput: EditText
+    private lateinit var printButton: Button
+    private lateinit var quickTestButton: Button
+
+    // ---------- UI: printer tab ----------
     private lateinit var deviceSpinner: Spinner
     private lateinit var connectButton: Button
-    private lateinit var testButton: Button
-    private lateinit var bitmapButton: Button
-    private lateinit var feedButton: Button
-    private lateinit var tsplButton: Button
-    private lateinit var tsplContinuousButton: Button
-    private lateinit var rawTextButton: Button
-    private lateinit var readBackButton: Button
+    private lateinit var webhookToggle: Button
+    private lateinit var webhookInfo: TextView
+    private lateinit var webhookKeyView: TextView
     private lateinit var updateButton: Button
     private lateinit var installButton: Button
 
+    // ---------- Bluetooth ----------
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
     }
@@ -50,7 +73,12 @@ class MainActivity : Activity() {
     private val targetMac = "66:32:8E:84:F6:84"
     private val sppUuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
-    // Self-update: เช็คไฟล์ latest.json บน GitHub (อัพโหลดพร้อม APK ทุกครั้งที่ออกเวอร์ชันใหม่)
+    // ---------- Webhook ----------
+    private var webhookServer: WebhookServer? = null
+    private val webhookPort = 8080
+    private var webhookKey: String = ""
+
+    // ---------- Self-update ----------
     private val updateApiUrl = "https://raw.githubusercontent.com/Techfrontiers/SydearPrinterTest/main/updates/latest.json"
     private val updateFileName = "sydear-printer-test-update.apk"
     private var downloadId: Long = -1
@@ -59,88 +87,359 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        webhookKey = loadOrCreateWebhookKey()
         buildUi()
         ensureBluetoothPermissions()
-        checkForUpdate(manual = false) // เช็คอัพเดทเงียบๆ ตอนเปิดแอป
+        checkForUpdate(manual = false)
+    }
+
+    // ================= UI =================
+
+    private fun lp() = LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT)
+    private fun fill() = LinearLayout.LayoutParams(-1, 0, 1f)
+
+    private fun sectionTitle(t: String) = TextView(this).apply {
+        text = t; textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, 20, 0, 6)
     }
 
     private fun buildUi() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(28, 24, 28, 24)
+            setPadding(24, 20, 24, 20)
         }
         root.addView(TextView(this).apply {
-            text = "SYDEAR Printer Test"; textSize = 25f; typeface = Typeface.DEFAULT_BOLD
+            text = "SYDEAR Printer"; textSize = 24f; typeface = Typeface.DEFAULT_BOLD
         }, lp())
-        root.addView(TextView(this).apply {
-            text = "ES-9910UB Bluetooth / protocol test"; textSize = 15f
-        }, lp())
+
+        // แถบเมนู 3 ปุ่ม
+        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        tabPrint = Button(this).apply { text = "🖨️ พิมพ์"; setOnClickListener { showTab(0) } }
+        tabPrinter = Button(this).apply { text = "🔵 เครื่องพิมพ์"; setOnClickListener { showTab(1) } }
+        tabLog = Button(this).apply { text = "📋 Log"; setOnClickListener { showTab(2) } }
+        val tabLp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        tabs.addView(tabPrint, tabLp); tabs.addView(tabPrinter, tabLp); tabs.addView(tabLog, tabLp)
+        root.addView(tabs, lp())
+
         status = TextView(this).apply {
-            text = "สถานะ: ยังไม่ได้เชื่อมต่อ"; textSize = 17f; setPadding(0,18,0,12)
+            text = "สถานะ: ยังไม่ได้เชื่อมต่อ"; textSize = 15f; setPadding(0, 10, 0, 4)
         }
         root.addView(status, lp())
-        root.addView(TextView(this).apply {
-            text = "Target MAC: $targetMac"; textSize = 14f
+
+        printScreen = buildPrintScreen()
+        printerScroll = ScrollView(this).apply { addView(buildPrinterScreen()) }
+        logScreen = buildLogScreen()
+        root.addView(printScreen, fill())
+        root.addView(printerScroll, fill())
+        root.addView(logScreen, fill())
+
+        setContentView(root)
+        showTab(0)
+        updateWebhookInfo()
+    }
+
+    private fun showTab(i: Int) {
+        printScreen.visibility = if (i == 0) View.VISIBLE else View.GONE
+        printerScroll.visibility = if (i == 1) View.VISIBLE else View.GONE
+        logScreen.visibility = if (i == 2) View.VISIBLE else View.GONE
+        tabPrint.isEnabled = i != 0
+        tabPrinter.isEnabled = i != 1
+        tabLog.isEnabled = i != 2
+    }
+
+    // ---------- หน้าพิมพ์ ----------
+
+    private fun buildPrintScreen(): LinearLayout {
+        val s = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        s.addView(TextView(this).apply {
+            text = "ข้อความที่จะพิมพ์"; textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD; setPadding(0, 8, 0, 4)
         }, lp())
+
+        // แถบเครื่องมือจัดรูปแบบข้อความ
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        bar.addView(fmtButton("B", { toggleStyleSpan { StyleSpan(Typeface.BOLD) } }) {
+            it.typeface = Typeface.DEFAULT_BOLD
+        })
+        bar.addView(fmtButton("I", { toggleStyleSpan { StyleSpan(Typeface.ITALIC) } }) {
+            it.setTypeface(it.typeface, Typeface.ITALIC)
+        })
+        bar.addView(fmtButton("U", { toggleStyleSpan { UnderlineSpan() } }) {
+            it.paintFlags = it.paintFlags or Paint.UNDERLINE_TEXT_FLAG
+        })
+        bar.addView(fmtButton("S", onClick = { setSizeSpan(0.75f) }))
+        bar.addView(fmtButton("M", onClick = { setSizeSpan(null) }))
+        bar.addView(fmtButton("L", onClick = { setSizeSpan(1.5f) }))
+        bar.addView(fmtButton("ซ้าย", onClick = { setAlignSpan(Layout.Alignment.ALIGN_NORMAL) }))
+        bar.addView(fmtButton("กลาง", onClick = { setAlignSpan(Layout.Alignment.ALIGN_CENTER) }))
+        bar.addView(fmtButton("ขวา", onClick = { setAlignSpan(Layout.Alignment.ALIGN_OPPOSITE) }))
+        s.addView(HorizontalScrollView(this).apply { addView(bar) }, lp())
+
+        printInput = EditText(this).apply {
+            hint = "พิมพ์ข้อความที่นี่…\nลากเลือกข้อความแล้วกด B / I / U / ขนาด / จัดแนว\n(ไม่เลือก = ทั้งเอกสาร)"
+            minLines = 6
+            gravity = Gravity.TOP
+            textSize = 18f
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        }
+        val inputLp = LinearLayout.LayoutParams(-1, 0, 1f)
+        inputLp.setMargins(0, 8, 0, 8)
+        s.addView(printInput, inputLp)
+
+        printButton = Button(this).apply {
+            text = "🖨️ พิมพ์ข้อความ"; textSize = 18f
+            setOnClickListener { printStyledText() }
+        }
+        s.addView(printButton, lp())
+        quickTestButton = Button(this).apply {
+            text = "ทดสอบด่วน (TSPL)"; setOnClickListener { sendTsplContinuousTest() }
+        }
+        s.addView(quickTestButton, lp())
+        return s
+    }
+
+    private fun fmtButton(label: String, onClick: () -> Unit, style: (Button) -> Unit = {}): Button {
+        return Button(this).apply {
+            text = label; textSize = 14f
+            style(this)
+            setOnClickListener { onClick() }
+        }
+    }
+
+    /** ช่วงข้อความเป้าหมาย: ที่เลือกไว้ หรือทั้งเอกสาร (ถ้าไม่ได้ลากเลือก) */
+    private fun effectiveRange(): IntRange {
+        val len = printInput.length()
+        val s = printInput.selectionStart.coerceAtLeast(0).coerceAtMost(len)
+        val e = printInput.selectionEnd.coerceAtLeast(0).coerceAtMost(len)
+        return if (s == e) 0..len else minOf(s, e)..maxOf(s, e)
+    }
+
+    private inline fun <reified T> toggleStyleSpan(crossinline make: () -> T) {
+        val text = printInput.text
+        val r = effectiveRange()
+        val existing = text.getSpans(r.first, r.last, T::class.java)
+        if (existing.isNotEmpty()) existing.forEach { text.removeSpan(it) }
+        else if (r.first < r.last) text.setSpan(make(), r.first, r.last, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+
+    /** factor = null → กลับขนาดปกติ */
+    private fun setSizeSpan(factor: Float?) {
+        val text = printInput.text
+        val r = effectiveRange()
+        text.getSpans(r.first, r.last, RelativeSizeSpan::class.java).forEach { text.removeSpan(it) }
+        if (factor != null && r.first < r.last)
+            text.setSpan(RelativeSizeSpan(factor), r.first, r.last, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+
+    private fun setAlignSpan(alignment: Layout.Alignment) {
+        val text = printInput.text
+        val r = effectiveRange()
+        // ขยายให้ครอบย่อหน้าที่แตะอยู่
+        var s = r.first
+        var e = r.last
+        while (s > 0 && text[s - 1] != '\n') s--
+        while (e < text.length && text[e] != '\n') e++
+        if (s >= e) { s = 0; e = text.length }
+        text.getSpans(s, e, AlignmentSpan::class.java).forEach { text.removeSpan(it) }
+        if (s < e) text.setSpan(AlignmentSpan.Standard(alignment), s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+
+    // ---------- สั่งพิมพ์ ----------
+
+    /** พิมพ์ข้อความจากกล่อง (เรนเดอร์เป็นบิตแมป 1-bit → TSPL BITMAP) */
+    private fun printStyledText() {
+        val spanned = printInput.text
+        if (spanned.isNullOrBlank()) { log("พิมพ์ข้อความก่อน"); return }
+        thread {
+            try {
+                val job = PrintRenderer.render(profile80mmContinuous, spanned)
+                if (job == null) { log("ไม่มีข้อความให้พิมพ์"); return@thread }
+                job.logLines.forEach { log(it) }
+                sendBytes(job.tspl, "BITMAP print")
+            } catch (e: Exception) {
+                log("พิมพ์ล้มเหลว: ${e.message}")
+            }
+        }
+    }
+
+    /** webhook สั่งพิมพ์: สร้าง span จาก style แล้วใช้ pipeline เดียวกัน */
+    private fun webhookPrint(text: String, style: WebhookServer.PrintStyle): WebhookServer.PrintResult {
+        if (output == null) return WebhookServer.PrintResult(false, "printer not connected")
+        return try {
+            val job = PrintRenderer.render(profile80mmContinuous, buildSpanned(text, style))
+                ?: return WebhookServer.PrintResult(false, "render failed")
+            job.logLines.forEach { log("[webhook] $it") }
+            log("[webhook] สั่งพิมพ์: ${text.take(50)}")
+            sendBytes(job.tspl, "webhook print")
+            WebhookServer.PrintResult(true, "sent ${job.tspl.size} bytes to printer")
+        } catch (e: Exception) {
+            WebhookServer.PrintResult(false, e.message ?: "print error")
+        }
+    }
+
+    private fun buildSpanned(text: String, style: WebhookServer.PrintStyle): Spanned {
+        val ss = SpannableString(text)
+        val n = text.length
+        if (n == 0) return ss
+        if (style.bold) ss.setSpan(StyleSpan(Typeface.BOLD), 0, n, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (style.italic) ss.setSpan(StyleSpan(Typeface.ITALIC), 0, n, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (style.underline) ss.setSpan(UnderlineSpan(), 0, n, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val factor = when (style.size.uppercase()) {
+            "S" -> 0.75f; "L" -> 1.5f; "XL" -> 2f; else -> null
+        }
+        if (factor != null) ss.setSpan(RelativeSizeSpan(factor), 0, n, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val align = when (style.align.lowercase()) {
+            "center", "กลาง" -> Layout.Alignment.ALIGN_CENTER
+            "right", "ขวา" -> Layout.Alignment.ALIGN_OPPOSITE
+            else -> Layout.Alignment.ALIGN_NORMAL
+        }
+        if (align != Layout.Alignment.ALIGN_NORMAL)
+            ss.setSpan(AlignmentSpan.Standard(align), 0, n, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        return ss
+    }
+
+    // ---------- หน้าเครื่องพิมพ์ ----------
+
+    private fun buildPrinterScreen(): LinearLayout {
+        val s = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        s.addView(sectionTitle("บลูทูธ"))
+        s.addView(TextView(this).apply { text = "Target MAC: $targetMac"; textSize = 14f }, lp())
         deviceSpinner = Spinner(this)
-        root.addView(deviceSpinner, lp())
-        root.addView(Button(this).apply {
+        s.addView(deviceSpinner, lp())
+        s.addView(Button(this).apply {
             text = "โหลดเครื่องที่จับคู่ไว้"; setOnClickListener { loadPairedDevices() }
         }, lp())
         connectButton = Button(this).apply {
             text = "เชื่อมต่อ"; setOnClickListener { connectSelected() }
         }
-        root.addView(connectButton, lp())
-        testButton = Button(this).apply {
-            text = "TEST: ESC/POS Text"; isEnabled = false; setOnClickListener { sendTextTest() }
+        s.addView(connectButton, lp())
+
+        s.addView(sectionTitle("โปรไฟล์เครื่องพิมพ์"))
+        s.addView(TextView(this).apply {
+            text = "80mm Continuous Thermal\nกว้าง 80mm / สูงอัตโนมัติตามเนื้อหา\nGAP 0 / Speed 8 / Density 15"
+            textSize = 14f
+        }, lp())
+
+        s.addView(sectionTitle("Webhook — สั่งพิมพ์ผ่านเน็ตเวิร์ก"))
+        webhookToggle = Button(this).apply {
+            text = "เปิด Webhook"; setOnClickListener { toggleWebhook() }
         }
-        root.addView(testButton, lp())
-        bitmapButton = Button(this).apply {
-            text = "TEST: Bitmap / Thai"; isEnabled = false; setOnClickListener { sendBitmapTest() }
-        }
-        root.addView(bitmapButton, lp())
-        feedButton = Button(this).apply {
-            text = "TEST: Feed กระดาษ"; isEnabled = false
-            setOnClickListener { sendBytes(byteArrayOf(0x1B,0x64,0x03), "Feed") }
-        }
-        root.addView(feedButton, lp())
-        tsplButton = Button(this).apply {
-            text = "TEST: TSPL สติ๊กเกอร์"; isEnabled = false; setOnClickListener { sendTsplTest() }
-        }
-        root.addView(tsplButton, lp())
-        tsplContinuousButton = Button(this).apply {
-            text = "TEST: TSPL 80mm CONTINUOUS"; isEnabled = false; setOnClickListener { sendTsplContinuousTest() }
-        }
-        root.addView(tsplContinuousButton, lp())
-        rawTextButton = Button(this).apply {
-            text = "TEST: RAW TEXT ล้วน"; isEnabled = false; setOnClickListener { sendRawTextTest() }
-        }
-        root.addView(rawTextButton, lp())
-        readBackButton = Button(this).apply {
-            text = "TEST: อ่านข้อมูลกลับ"; isEnabled = false; setOnClickListener { readBackTest() }
-        }
-        root.addView(readBackButton, lp())
+        s.addView(webhookToggle, lp())
+        webhookKeyView = TextView(this).apply { textSize = 14f; setTextIsSelectable(true) }
+        s.addView(webhookKeyView, lp())
+        s.addView(Button(this).apply {
+            text = "สุ่มคีย์ใหม่"; setOnClickListener { regenerateWebhookKey() }
+        }, lp())
+        webhookInfo = TextView(this).apply { textSize = 13f; setTextIsSelectable(true) }
+        s.addView(webhookInfo, lp())
+
+        s.addView(sectionTitle("อัพเดทแอป"))
         updateButton = Button(this).apply {
             text = "เช็คอัพเดท"; setOnClickListener { checkForUpdate(manual = true) }
         }
-        root.addView(updateButton, lp())
+        s.addView(updateButton, lp())
         installButton = Button(this).apply {
             text = "ติดตั้งไฟล์ที่โหลดไว้"; setOnClickListener { installApk() }
         }
-        root.addView(installButton, lp())
-        root.addView(TextView(this).apply {
-            text = "Log"; textSize = 18f; typeface = Typeface.DEFAULT_BOLD; setPadding(0,18,0,6)
-        }, lp())
-        logView = TextView(this).apply {
-            textSize = 13f; setTextIsSelectable(true); text = "รอเริ่มทดสอบ...\n"
-        }
-        root.addView(ScrollView(this).apply { addView(logView) }, LinearLayout.LayoutParams(-1,0,1f))
-        setContentView(root)
+        s.addView(installButton, lp())
+        // กันปุ่มสุดท้ายชิดขอบล่างเกินไป
+        s.addView(View(this).apply { minimumHeight = 40 }, lp())
+        return s
     }
 
-    private fun lp() = LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT)
+    private fun toggleWebhook() {
+        val srv = webhookServer
+        if (srv?.isRunning == true) {
+            srv.stop()
+            webhookToggle.text = "เปิด Webhook"
+        } else {
+            val s = WebhookServer(webhookPort, webhookKey, ::webhookPrint, ::webhookStatus, ::log)
+            if (s.start()) {
+                webhookServer = s
+                webhookToggle.text = "ปิด Webhook"
+            }
+        }
+        updateWebhookInfo()
+    }
 
-    // ---------- Self-update ----------
+    private fun webhookStatus(): JSONObject {
+        val v = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" }
+                catch (_: Exception) { "?" }
+        return JSONObject()
+            .put("connected", output != null)
+            .put("printer", "ES-9910UB")
+            .put("printer_mac", targetMac)
+            .put("version", v)
+    }
+
+    private fun updateWebhookInfo() {
+        val running = webhookServer?.isRunning == true
+        webhookKeyView.text = "คีย์: $webhookKey"
+        val sb = StringBuilder()
+        if (running) {
+            sb.append("สถานะ: เปิดอยู่ ✅\n")
+            for (ip in localIpAddresses()) sb.append("http://$ip:$webhookPort/print\n")
+            sb.append("\nPOST /print ด้วย JSON:\n")
+            sb.append("{\"text\":\"สวัสดี\",\"bold\":true,\"size\":\"L\",\"align\":\"center\"}\n")
+            sb.append("แนบคีย์ทาง ?key= หรือ header X-Webhook-Key\n")
+            sb.append("GET /status — เช็คสถานะเครื่องพิมพ์")
+        } else {
+            sb.append("สถานะ: ปิดอยู่ — เปิดแล้วอุปกรณ์ในเน็ตเวิร์กเดียวกัน\n")
+            sb.append("(หรือผ่าน Tailscale) จะสั่งพิมพ์ได้")
+        }
+        webhookInfo.text = sb.toString()
+    }
+
+    private fun localIpAddresses(): List<String> {
+        val out = mutableListOf<String>()
+        try {
+            val ifs = java.net.NetworkInterface.getNetworkInterfaces()
+            while (ifs.hasMoreElements()) {
+                val ni = ifs.nextElement()
+                if (!ni.isUp || ni.isLoopback) continue
+                val addrs = ni.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val a = addrs.nextElement()
+                    if (!a.isLoopbackAddress && a is java.net.Inet4Address)
+                        out.add("${a.hostAddress} (${ni.name})")
+                }
+            }
+        } catch (_: Exception) {}
+        return out.ifEmpty { listOf("<ไม่พบ IP>") }
+    }
+
+    private fun loadOrCreateWebhookKey(): String {
+        val prefs = getSharedPreferences("sydear_printer", MODE_PRIVATE)
+        val k = prefs.getString("webhook_key", null)
+        if (!k.isNullOrBlank()) return k
+        val nk = UUID.randomUUID().toString().replace("-", "").take(16)
+        prefs.edit().putString("webhook_key", nk).apply()
+        return nk
+    }
+
+    private fun regenerateWebhookKey() {
+        val k = UUID.randomUUID().toString().replace("-", "").take(16)
+        getSharedPreferences("sydear_printer", MODE_PRIVATE).edit().putString("webhook_key", k).apply()
+        webhookKey = k
+        webhookServer?.setApiKey(k)
+        updateWebhookInfo()
+        log("สุ่มคีย์ webhook ใหม่แล้ว")
+    }
+
+    // ---------- หน้า Log ----------
+
+    private fun buildLogScreen(): LinearLayout {
+        val s = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        s.addView(Button(this).apply {
+            text = "ล้าง Log"; setOnClickListener { logView.text = "" }
+        }, lp())
+        logView = TextView(this).apply {
+            textSize = 13f; setTextIsSelectable(true); text = "รอเริ่ม…\n"
+        }
+        s.addView(ScrollView(this).apply { addView(logView) }, fill())
+        return s
+    }
+
+    // ================= Self-update =================
 
     private fun checkForUpdate(manual: Boolean) {
         thread {
@@ -270,7 +569,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- Bluetooth (เดิม) ----------
+    // ================= Bluetooth =================
 
     private fun ensureBluetoothPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -342,9 +641,8 @@ class MainActivity : Activity() {
                 if (connected != null && connected!!.isConnected) {
                     socket = connected; output = connected!!.outputStream
                     status.text = "สถานะ: Connected ✅"; connectButton.text = "ตัดการเชื่อมต่อ"
-                    testButton.isEnabled = true; bitmapButton.isEnabled = true; feedButton.isEnabled = true
-                    tsplButton.isEnabled = true; rawTextButton.isEnabled = true; readBackButton.isEnabled = true
-                    tsplContinuousButton.isEnabled = true
+                    printButton.isEnabled = true
+                    quickTestButton.isEnabled = true
                     log("CONNECTED via RFCOMM/SPP")
                 } else {
                     status.text = "สถานะ: Connect failed ❌"
@@ -359,29 +657,12 @@ class MainActivity : Activity() {
         try { socket?.close() } catch (_: Exception) {}
         output = null; socket = null
         status.text = "สถานะ: ยังไม่ได้เชื่อมต่อ"; connectButton.text = "เชื่อมต่อ"
-        testButton.isEnabled = false; bitmapButton.isEnabled = false; feedButton.isEnabled = false
-        tsplButton.isEnabled = false; rawTextButton.isEnabled = false; readBackButton.isEnabled = false
-        tsplContinuousButton.isEnabled = false
+        if (::printButton.isInitialized) printButton.isEnabled = false
+        if (::quickTestButton.isInitialized) quickTestButton.isEnabled = false
         log("Disconnected")
     }
 
-    private fun sendTextTest() {
-        val out = output ?: run { log("ยังไม่ได้ connect"); return }
-        thread {
-            try {
-                val data = Builder().bytes(0x1B,0x40).bytes(0x1B,0x61,0x01).bytes(0x1B,0x45,0x01)
-                    .text("SYDEAR TEST\n").bytes(0x1B,0x45,0x00).bytes(0x1B,0x61,0x00)
-                    .text("ES-9910UB\n").text("Bluetooth SPP OK?\n").bytes(0x1B,0x64,0x04).build()
-                synchronized(out) { out.write(data); out.flush() }
-                log("ส่ง ESC/POS text test แล้ว (${data.size} bytes)")
-            } catch (e: Exception) { log("Text test failed: ${e.message}") }
-        }
-    }
-
-    private fun sendBitmapTest() { log("Bitmap test: รอผล Text test ก่อน เพื่อยืนยัน protocol") }
-
-    // ---------- TSPL (ภาษาเครื่องพิมพ์สติ๊กเกอร์) ----------
-    // ---------- Printer Profile: 80mm Continuous Thermal ----------
+    // ================= Printer Profile: 80mm Continuous Thermal =================
     // โปรไฟล์กระดาษต่อเนื่อง 80mm — ความสูงกระดาษ "ไม่ตายตัว"
     // ระบบจะคำนวณจาก bounding box จริงของเนื้อหา:
     //   TOTAL = top margin (10mm) + CONTENT_HEIGHT + bottom margin (10mm)
@@ -459,6 +740,7 @@ class MainActivity : Activity() {
         }
     }
 
+    /** ทดสอบด่วน: เส้นทาง TSPL TEXT ที่ยืนยันแล้วว่าพิมพ์ออกบนเครื่องจริง */
     private fun sendTsplContinuousTest() {
         val p = profile80mmContinuous
         log("ใช้โปรไฟล์: ${p.name}")
@@ -471,58 +753,6 @@ class MainActivity : Activity() {
             addTextLine("GAP 0")
         }
         sendBytes(tspl.toByteArray(Charsets.US_ASCII), "TSPL 80mm CONTINUOUS AUTO")
-    }
-
-    private fun sendTsplTest() {
-        val tspl = buildString {
-            append("SIZE 80 mm,40 mm\r\n")
-            append("GAP 3 mm,0 mm\r\n")
-            append("DIRECTION 1\r\n")
-            append("CLS\r\n")
-            append("TEXT 30,30,\"TSS24.BF2\",0,1,1,\"SYDEAR TSPL TEST\"\r\n")
-            append("TEXT 30,70,\"TSS24.BF2\",0,1,1,\"1234567890\"\r\n")
-            append("BARCODE 30,110,\"128\",60,1,0,2,2,\"TEST123\"\r\n")
-            append("PRINT 1\r\n")
-        }
-        sendBytes(tspl.toByteArray(Charsets.US_ASCII), "TSPL label")
-    }
-
-    private fun sendRawTextTest() {
-        val raw = "SYDEAR RAW TEST\n1234567890\n\n\n"
-        sendBytes(raw.toByteArray(Charsets.UTF_8), "RAW TEXT")
-    }
-
-    // อ่านข้อมูลที่เครื่องส่งกลับ (ถ้ามี) เพื่อดูว่าช่องสื่อสารสองทางหรือไม่
-    private fun readBackTest() {
-        val s = socket
-        if (s == null) { log("ยังไม่ได้เชื่อมต่อ"); return }
-        log("รอฟังข้อมูลจากเครื่อง 3 วินาที...")
-        thread {
-            try {
-                val inp = s.inputStream
-                val buf = ByteArray(256)
-                var total = 0
-                val deadline = System.currentTimeMillis() + 3000
-                while (System.currentTimeMillis() < deadline && total < buf.size) {
-                    val avail = inp.available()
-                    if (avail > 0) {
-                        val n = inp.read(buf, total, minOf(avail, buf.size - total))
-                        if (n <= 0) break
-                        total += n
-                    } else {
-                        Thread.sleep(100)
-                    }
-                }
-                if (total > 0) {
-                    val hex = buf.take(total).joinToString(" ") { "%02X".format(it) }
-                    log("เครื่องตอบกลับ $total bytes: $hex")
-                } else {
-                    log("เครื่องไม่ส่งข้อมูลกลับมาเลย")
-                }
-            } catch (e: Exception) {
-                log("อ่านข้อมูลล้มเหลว: ${e.message}")
-            }
-        }
     }
 
     private fun sendBytes(bytes:ByteArray, label:String) {
@@ -540,12 +770,9 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onDestroy() { disconnect(); super.onDestroy() }
-
-    private class Builder {
-        private val bytes = java.io.ByteArrayOutputStream()
-        fun bytes(vararg values:Int):Builder { values.forEach { bytes.write(it and 0xFF) }; return this }
-        fun text(value:String):Builder { bytes.write(value.toByteArray(Charsets.US_ASCII)); return this }
-        fun build():ByteArray = bytes.toByteArray()
+    override fun onDestroy() {
+        try { webhookServer?.stop() } catch (_: Exception) {}
+        disconnect()
+        super.onDestroy()
     }
 }
