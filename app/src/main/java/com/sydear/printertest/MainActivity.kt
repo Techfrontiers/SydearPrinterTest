@@ -37,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var rawTextButton: Button
     private lateinit var readBackButton: Button
     private lateinit var updateButton: Button
+    private lateinit var installButton: Button
 
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -117,6 +118,10 @@ class MainActivity : Activity() {
             text = "เช็คอัพเดท"; setOnClickListener { checkForUpdate(manual = true) }
         }
         root.addView(updateButton, lp())
+        installButton = Button(this).apply {
+            text = "ติดตั้งไฟล์ที่โหลดไว้"; setOnClickListener { installApk() }
+        }
+        root.addView(installButton, lp())
         root.addView(TextView(this).apply {
             text = "Log"; textSize = 18f; typeface = Typeface.DEFAULT_BOLD; setPadding(0,18,0,6)
         }, lp())
@@ -236,16 +241,26 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun installApk() {
+    // คืน true ถ้าเรียกตัวติดตั้งสำเร็จ, false ถ้าไม่ (ให้ผู้ใช้กดปุ่มติดตั้งเอง)
+    private fun installApk(): Boolean {
         try {
+            val f = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), updateFileName)
+            if (!f.isFile || f.length() == 0L) {
+                log("ยังไม่มีไฟล์อัพเดทให้ติดตั้ง")
+                return false
+            }
+            log("พบไฟล์อัพเดท ${f.length() / 1024} KB กำลังเปิดตัวติดตั้ง...")
             val uri = Uri.parse("content://$packageName.apkprovider/$updateFileName")
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             startActivity(intent)
+            return true
         } catch (e: Exception) {
-            log("เปิดตัวติดตั้งไม่ได้: ${e.message}")
+            log("เปิดตัวติดตั้งไม่ได้ (${e.javaClass.simpleName}): ${e.message}")
+            log("กดปุ่ม 'ติดตั้งไฟล์ที่โหลดไว้' เพื่อลองอีกครั้ง")
+            return false
         }
     }
 
