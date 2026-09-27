@@ -43,8 +43,10 @@ object PrintRenderer {
         val heightDots: Int
     )
 
-    /** คืน null ถ้าไม่มีข้อความให้พิมพ์ */
-    fun render(profile: MainActivity.PrinterProfile, spanned: Spanned): RenderedJob? {
+    data class RenderedBitmap(val widthBytes: Int, val heightDots: Int, val data: ByteArray)
+
+    /** เรนเดอร์ข้อความเป็นบิตแมปดิบ 1-bit (ยังไม่ห่อ TSPL) — คืน null ถ้าไม่มีข้อความ */
+    fun renderBitmap(spanned: Spanned, invert: Boolean): RenderedBitmap? {
         if (spanned.isNullOrBlank()) return null
 
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -91,10 +93,19 @@ object PrintRenderer {
                 }
             }
         }
-        // กลับขั้ว: ทดสอบบน ES-9910UB จริงพบว่าเครื่องอ่าน bit กลับด้าน
-        // (0=พิมพ์ดำ, 1=ไม่พิมพ์) ไม่ตรงคู่มือ — XOR ทั้งบัฟเฟอร์ให้พื้นขาวไม่พิมพ์
-        // (bit padding ขอบขวากลายเป็น 1 = ไม่พิมพ์ ถูกต้องแล้ว)
-        for (i in mono.indices) mono[i] = (mono[i].toInt() xor 0xFF).toByte()
+        // กลับขั้ว bit ตามตัวเลือกในแอป (ความจริงขึ้นกับ firmware ของเครื่อง)
+        if (invert) for (i in mono.indices) mono[i] = (mono[i].toInt() xor 0xFF).toByte()
+
+        return RenderedBitmap(rowBytes, h, mono)
+    }
+
+    /** ห่อบิตแมปเป็นงานพิมพ์ TSPL ทั้งชุด — คืน null ถ้าไม่มีข้อความให้พิมพ์ */
+    fun render(profile: MainActivity.PrinterProfile, spanned: Spanned, invert: Boolean): RenderedJob? {
+        val rb = renderBitmap(spanned, invert) ?: return null
+        val rowBytes = rb.widthBytes
+        val h = rb.heightDots
+        val mono = rb.data
+        val w = CONTENT_WIDTH_DOTS
 
         val dpm = DOTS_PER_MM
         val topDots = profile.topMarginMm * dpm
