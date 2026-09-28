@@ -49,7 +49,7 @@ class MainActivity : Activity() {
     private lateinit var tabPrint: Button
     private lateinit var tabPrinter: Button
     private lateinit var tabLog: Button
-    private lateinit var printScreen: LinearLayout
+    private lateinit var printScroll: ScrollView
     private lateinit var printerScroll: ScrollView
     private lateinit var logScreen: LinearLayout
     private lateinit var status: TextView
@@ -141,10 +141,10 @@ class MainActivity : Activity() {
         }
         root.addView(status, lp())
 
-        printScreen = buildPrintScreen()
+        printScroll = ScrollView(this).apply { addView(buildPrintScreen()) }
         printerScroll = ScrollView(this).apply { addView(buildPrinterScreen()) }
         logScreen = buildLogScreen()
-        root.addView(printScreen, fill())
+        root.addView(printScroll, fill())
         root.addView(printerScroll, fill())
         root.addView(logScreen, fill())
 
@@ -154,7 +154,7 @@ class MainActivity : Activity() {
     }
 
     private fun showTab(i: Int) {
-        printScreen.visibility = if (i == 0) View.VISIBLE else View.GONE
+        printScroll.visibility = if (i == 0) View.VISIBLE else View.GONE
         printerScroll.visibility = if (i == 1) View.VISIBLE else View.GONE
         logScreen.visibility = if (i == 2) View.VISIBLE else View.GONE
         tabPrint.isEnabled = i != 0
@@ -197,7 +197,7 @@ class MainActivity : Activity() {
             textSize = 18f
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
         }
-        val inputLp = LinearLayout.LayoutParams(-1, 0, 1f)
+        val inputLp = LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT)
         inputLp.setMargins(0, 8, 0, 8)
         s.addView(printInput, inputLp)
 
@@ -243,9 +243,10 @@ class MainActivity : Activity() {
             scaleType = ImageView.ScaleType.FIT_CENTER
             visibility = View.GONE
         }
+        // ล็อกความสูงพรีวิว 240dp — รูปแนวตั้งจะได้ไม่ดันจอยาวเป็นกิโล
         val pvLp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
+            (240 * resources.displayMetrics.density).toInt()
         )
         s.addView(photoPreview, pvLp)
         printPhotoButton = Button(this).apply {
